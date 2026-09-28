@@ -28,6 +28,10 @@ Panel {
   property string errorMessage: ""
   property string actionMessage: ""
   property string actionLabel: ""
+  property var upgradingTools: []
+  property var upgradeProgress: ({})
+  property int actionErrOffset: 0
+  property string actionErrLine: ""
   property var pendingArgs: []
   property string pendingLabel: ""
   property string pendingMessage: ""
@@ -101,12 +105,32 @@ Panel {
     errorMessage = ""
     actionMessage = label + "…"
     actionLabel = label
+    upgradeProgress = ({})
+    actionErrOffset = 0
+    actionErrLine = ""
     var command = ["mise", "-C", home, "-y"].concat(args)
     actionProc.command = pruneUpgrade ? ["env", "MISE_UPGRADE_AUTO_PRUNE=1"].concat(command) : command
     actionProc.running = true
   }
 
+  function readActionProgress(output) {
+    if (upgradingTools.length === 0) return
+    if (output.length < actionErrOffset) { actionErrOffset = 0; actionErrLine = "" }
+    var lines = (actionErrLine + output.slice(actionErrOffset)).split(/\r?\n/)
+    actionErrOffset = output.length
+    actionErrLine = lines.pop()
+    for (var i = 0; i < lines.length; i++) {
+      var progress = Model.upgradeProgressLine(lines[i], upgradingTools)
+      if (!progress) continue
+      var next = Object.assign({}, upgradeProgress)
+      next[progress.name] = progress
+      upgradeProgress = next
+    }
+  }
+
   function upgradeTools(names, label) {
+    if (busy) return
+    upgradingTools = names.slice()
     runAction(["upgrade"].concat(autoPrune ? [] : ["--no-prune"], names), label, autoPrune)
   }
 
@@ -173,8 +197,14 @@ Panel {
   Process {
     id: actionProc
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
-    stderr: StdioCollector { id: actionErr; waitForEnd: true }
+    stderr: StdioCollector {
+      id: actionErr
+      waitForEnd: false
+      onTextChanged: root.readActionProgress(text)
+    }
     onExited: function(exitCode) {
+      root.upgradingTools = []
+      root.upgradeProgress = ({})
       if (exitCode === 0) {
         root.actionMessage = root.actionLabel + " complete"
         if (root.actionLabel.indexOf("Installing ") === 0) addField.text = ""
@@ -267,7 +297,7 @@ Panel {
 
         Text {
           width: parent.width
-          visible: root.busy || root.errorMessage !== "" || root.actionMessage !== ""
+          visible: root.errorMessage !== "" || (root.busy && (!actionProc.running || root.upgradingTools.length === 0)) || (!root.busy && root.actionMessage !== "")
           text: root.errorMessage || (root.busy ? (actionProc.running ? root.actionMessage : "Checking mise tools…") : root.actionMessage)
           textFormat: Text.PlainText
           color: root.errorMessage ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
@@ -372,10 +402,59 @@ Panel {
                       }
                     }
                     Button {
+                      visible: root.upgradingTools.indexOf(updateRow.modelData.name) === -1
                       text: "Update"
                       focusable: true
                       enabled: !root.busy
                       onClicked: root.upgradeTools([updateRow.modelData.name], "Updating " + updateRow.modelData.name)
+                    }
+                    Column {
+                      id: inlineProgress
+                      readonly property var progress: root.upgradeProgress[updateRow.modelData.name]
+                      visible: root.upgradingTools.indexOf(updateRow.modelData.name) !== -1
+                      Layout.preferredWidth: Style.space(110)
+                      spacing: Style.space(4)
+                      Text {
+                        width: parent.width
+                        text: inlineProgress.progress
+                          ? inlineProgress.progress.phase.charAt(0).toUpperCase() + inlineProgress.progress.phase.slice(1)
+                            + (inlineProgress.progress.percent === null ? "…" : " " + inlineProgress.progress.percent + "%")
+                          : "Updating…"
+                        textFormat: Text.PlainText
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                        elide: Text.ElideRight
+                      }
+                      Rectangle {
+                        id: progressTrack
+                        width: parent.width
+                        height: Style.space(3)
+                        radius: height / 2
+                        color: Util.alpha(root.foreground, 0.2)
+                        Rectangle {
+                          visible: !!inlineProgress.progress && inlineProgress.progress.percent !== null
+                          width: parent.width * (inlineProgress.progress ? inlineProgress.progress.percent || 0 : 0) / 100
+                          height: parent.height
+                          radius: height / 2
+                          color: Color.accent
+                        }
+                        Rectangle {
+                          id: progressPulse
+                          visible: !inlineProgress.progress || inlineProgress.progress.percent === null
+                          width: parent.width * 0.35
+                          height: parent.height
+                          radius: height / 2
+                          color: Color.accent
+                          NumberAnimation on x {
+                            from: 0
+                            to: progressTrack.width - progressPulse.width
+                            duration: 900
+                            loops: Animation.Infinite
+                            running: inlineProgress.visible && progressPulse.visible
+                          }
+                        }
+                      }
                     }
                   }
                 }

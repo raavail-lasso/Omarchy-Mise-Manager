@@ -25,4 +25,11 @@ assert.deepEqual(model.searchResults("node  Node.js\npython  Python\n" ).map(r =
 assert.equal(model.validToolSpec("npm:prettier@3"), true)
 assert.equal(model.validToolSpec("--all"), false)
 assert.equal(model.validToolSpec("node;rm"), false)
+assert.deepEqual(model.upgradeProgressLine("  node@24  downloading  3.0s  42.1/78.3 MB · 12.4 MB/s", ["node", "python"]),
+  { name: "node", phase: "downloading", percent: 54 })
+assert.deepEqual(model.upgradeProgressLine("  python@3.14  installing  1.0s  32/48 pkgs", ["node", "python"]),
+  { name: "python", phase: "installing", percent: 67 })
+assert.deepEqual(model.upgradeProgressLine("  node@24  extracting  3.0s", ["node"]),
+  { name: "node", phase: "extracting", percent: null })
+assert.equal(model.upgradeProgressLine("✓ node@24  3.0s", ["node"]), null)
 console.log("Model checks passed")

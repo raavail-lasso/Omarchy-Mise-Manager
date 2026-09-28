@@ -74,10 +74,26 @@ function validToolSpec(value) {
   return /^[A-Za-z0-9][A-Za-z0-9_.:+/@-]*$/.test(String(value || "").trim())
 }
 
+function upgradeProgressLine(line, names) {
+  var text = String(line || "").replace(/\x1b\[[0-9;]*m/g, "")
+  for (var i = 0; i < names.length; i++) {
+    var marker = names[i] + "@"
+    var start = text.indexOf(marker)
+    if (start < 0 || (start > 0 && !/\s/.test(text[start - 1]))) continue
+    var match = text.slice(start + marker.length).match(/^\S+\s{2,}(.+?)\s{2,}\d+(?:\.\d+)?(?:ms|s)\b(?:\s{2,}(.+))?$/)
+    if (!match) continue
+    var amount = String(match[2] || "").match(/^(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)(?:\s|$)/)
+    var percent = amount && Number(amount[2]) > 0 ? Math.min(100, Math.round(100 * Number(amount[1]) / Number(amount[2]))) : null
+    return { name: names[i], phase: match[1], percent: percent }
+  }
+  return null
+}
+
 if (typeof module !== "undefined") module.exports = {
   objectFromJson: objectFromJson,
   updateCount: updateCount,
   rows: rows,
   searchResults: searchResults,
-  validToolSpec: validToolSpec
+  validToolSpec: validToolSpec,
+  upgradeProgressLine: upgradeProgressLine
 }
