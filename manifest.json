@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "raavail.mise-manager",
+  "name": "Mise Manager",
+  "version": "0.1.0",
+  "author": "raavail",
+  "description": "Manage globally selected mise tools from the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Mise Manager",
+    "description": "Check updates and manage global mise tools and installed versions.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
