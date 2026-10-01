@@ -18,9 +18,11 @@ Panel {
   property var globals: ({})
   property var prunable: ({})
   property var updates: ({})
+  property var miseSettings: ({})
   property var suggestions: []
   property string filterText: ""
-  property string activeTab: "updates"
+  property bool showSettings: false
+  readonly property string settingsLabel: "Saving mise settings"
   property string expandedTool: ""
   property string queryStage: ""
   property bool refreshPending: false
@@ -38,8 +40,24 @@ Panel {
   property double lastChecked: 0
 
   readonly property bool busy: queryStage !== "" || actionProc.running
-  readonly property bool autoPrune: settings && settings.autoPrune === true
+  readonly property var upgradeSettings: miseSettings.upgrade || ({})
+  readonly property bool autoPrune: upgradeSettings.auto_prune === true
+  readonly property string pruneAfter: String(upgradeSettings.prune_after || "")
+  readonly property string releaseAge: String(miseSettings.minimum_release_age || "")
+  readonly property var releaseAgeExcludes: Array.isArray(miseSettings.minimum_release_age_excludes) ? miseSettings.minimum_release_age_excludes : []
+  readonly property var prunePresets: [
+    { value: "0s", label: "Now" }, { value: "1d", label: "1d" },
+    { value: "7d", label: "7d" }, { value: "30d", label: "30d" }
+  ]
+  readonly property var cooldownPresets: [
+    { value: "", label: "Off" }, { value: "1d", label: "1d" }, { value: "3d", label: "3d" },
+    { value: "7d", label: "7d" }, { value: "14d", label: "14d" }
+  ]
   readonly property var toolRows: Model.rows(installed, globals, updates, prunable, filterText)
+  readonly property int prunableCount: Object.keys(prunable).reduce(function(count, name) {
+    return count + (Array.isArray(prunable[name]) ? prunable[name].length : 0)
+  }, 0)
+  readonly property var addRows: Model.addRows(filterText, suggestions, Object.assign({}, installed, globals))
   readonly property var updateRows: Model.rows(installed, globals, updates, prunable, "").filter(function(item) { return item.latest !== "" })
   readonly property int updateCount: Model.updateCount(globals, updates)
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -84,8 +102,11 @@ Panel {
         } else if (stage === "prunable") {
           prunable = data
           Qt.callLater(function() { root.startQuery("outdated", ["outdated", "--json"]) })
-        } else {
+        } else if (stage === "outdated") {
           updates = data
+          Qt.callLater(function() { root.startQuery("settings", ["settings", "ls", "--all", "--json"]) })
+        } else {
+          miseSettings = data
           lastChecked = Date.now()
           queryStage = ""
         }
@@ -100,7 +121,7 @@ Panel {
     }
   }
 
-  function runAction(args, label, pruneUpgrade) {
+  function runAction(args, label) {
     if (busy) return
     errorMessage = ""
     actionMessage = label + "…"
@@ -108,8 +129,7 @@ Panel {
     upgradeProgress = ({})
     actionErrOffset = 0
     actionErrLine = ""
-    var command = ["mise", "-C", home, "-y"].concat(args)
-    actionProc.command = pruneUpgrade ? ["env", "MISE_UPGRADE_AUTO_PRUNE=1"].concat(command) : command
+    actionProc.command = ["mise", "-C", home, "-y"].concat(args)
     actionProc.running = true
   }
 
@@ -131,16 +151,24 @@ Panel {
   function upgradeTools(names, label) {
     if (busy) return
     upgradingTools = names.slice()
-    runAction(["upgrade"].concat(autoPrune ? [] : ["--no-prune"], names), label, autoPrune)
+    runAction(["upgrade"].concat(names), label)
   }
 
-  function setAutoPrune(value) {
-    var entry = { id: moduleName }
-    for (var key in settings) if (key !== "id") entry[key] = settings[key]
-    entry.autoPrune = value
-    settings = entry
-    if (bar && bar.shell && typeof bar.shell.updateEntryInline === "function")
-      bar.shell.updateEntryInline(moduleName, entry)
+  // Writes ~/.config/mise/config.toml, so terminal `mise` follows these too.
+  function setMiseSetting(key, value) {
+    runAction(value === null ? ["settings", "unset", key] : ["settings", "set", key, String(value)], root.settingsLabel)
+  }
+
+  // Edits the version key only, so tool options like allow_builds survive.
+  function setPinned(tool, pin) {
+    runAction(["config", "set", "--global", "tools." + tool.name + ".version", pin ? tool.activeVersion : "latest"],
+      (pin ? "Pinning " : "Unpinning ") + tool.name)
+  }
+
+  function toggleCooldownSkip(name) {
+    var next = releaseAgeExcludes.filter(function(item) { return item !== name })
+    if (next.length === releaseAgeExcludes.length) next.push(name)
+    setMiseSetting("minimum_release_age_excludes", next.join(","))
   }
 
   function confirmAction(args, label, message) {
@@ -163,12 +191,18 @@ Panel {
   }
 
   function searchTools() {
-    var query = addField.text.trim()
+    var query = searchField.text.trim()
     if (query.length < 2 || query.indexOf("@") !== -1) { suggestions = []; return }
     if (searchProc.running) { searchPending = true; return }
     searchProc.currentQuery = query
     searchProc.command = ["mise", "search", "--no-header", "--match-type", "contains", query]
     searchProc.running = true
+  }
+
+  onOpenedChanged: {
+    if (opened || busy) return
+    actionMessage = ""
+    errorMessage = ""
   }
 
   // ponytail: each bar instance scans separately; share a service if multi-monitor polling becomes costly.
@@ -179,6 +213,12 @@ Panel {
     running: true
     repeat: true
     onTriggered: root.refresh()
+  }
+
+  Timer {
+    id: messageTimer
+    interval: 4000
+    onTriggered: if (!actionProc.running) root.actionMessage = ""
   }
 
   Timer {
@@ -206,8 +246,9 @@ Panel {
       root.upgradingTools = []
       root.upgradeProgress = ({})
       if (exitCode === 0) {
-        root.actionMessage = root.actionLabel + " complete"
-        if (root.actionLabel.indexOf("Installing ") === 0) addField.text = ""
+        root.actionMessage = root.actionLabel === root.settingsLabel ? "" : root.actionLabel + " complete"
+        messageTimer.restart()
+        if (root.actionLabel.indexOf("Installing ") === 0) searchField.text = ""
       } else {
         root.errorMessage = root.actionLabel + " failed: " + String(actionErr.text || actionOut.text || "unknown error").trim().slice(0, 240)
         root.actionMessage = ""
@@ -222,7 +263,7 @@ Panel {
     property string currentQuery: ""
     stdout: StdioCollector { id: searchOut; waitForEnd: true }
     onExited: function(exitCode) {
-      if (currentQuery === addField.text.trim())
+      if (currentQuery === searchField.text.trim())
         root.suggestions = exitCode === 0 ? Model.searchResults(searchOut.text) : []
       if (root.searchPending) {
         root.searchPending = false
@@ -268,99 +309,169 @@ Panel {
         }
       }
 
-      Column {
-        id: content
-        width: parent.width
-        spacing: Style.space(8)
-
-        RowLayout {
-          width: parent.width
-          spacing: Style.space(6)
-
-          Text {
-            text: "Mise Manager"
-            textFormat: Text.PlainText
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
-            Layout.fillWidth: true
-          }
-
-          Button {
-            text: "Refresh"
-            focusable: true
-            enabled: !root.busy
-            onClicked: root.refresh()
-          }
-        }
-
-        Text {
-          width: parent.width
-          visible: root.errorMessage !== "" || (root.busy && (!actionProc.running || root.upgradingTools.length === 0)) || (!root.busy && root.actionMessage !== "")
-          text: root.errorMessage || (root.busy ? (actionProc.running ? root.actionMessage : "Checking mise tools…") : root.actionMessage)
-          textFormat: Text.PlainText
-          color: root.errorMessage ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.WordWrap
-        }
-
-        ButtonGroup {
-          options: [
-            { value: "updates", label: "Updates" + (root.updateCount ? " (" + root.updateCount + ")" : "") },
-            { value: "tools", label: "Tools" },
-            { value: "add", label: "Add" }
-          ]
-          value: root.activeTab
-          onChanged: function(value) { root.activeTab = value }
-        }
-
-        Rectangle {
-          width: parent.width
-          height: 1
-          color: Util.alpha(root.foreground, 0.2)
-        }
+      Flickable {
+        anchors.fill: parent
+        contentHeight: content.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
 
         Column {
-          visible: root.activeTab === "updates"
+          id: content
           width: parent.width
           spacing: Style.space(8)
 
           RowLayout {
             width: parent.width
+            spacing: Style.space(6)
+
             Text {
-              text: "Available updates"
+              text: "Mise Manager"
               textFormat: Text.PlainText
               color: root.foreground
               font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: Style.font.title
               font.bold: true
               Layout.fillWidth: true
             }
+
             Button {
-              text: "Update all"
+              visible: root.updateRows.length > 0
+              text: "Update all (" + root.updateRows.length + ")"
               focusable: true
-              enabled: !root.busy && root.updateRows.length > 0
+              enabled: !root.busy
               onClicked: root.upgradeTools(root.updateRows.map(function(item) { return item.name }), "Updating tools")
+            }
+
+            Button {
+              iconText: "󰑐"
+              tooltipText: "Refresh"
+              focusable: true
+              enabled: !root.busy
+              onClicked: root.refresh()
+            }
+
+            Button {
+              iconText: "󰒓"
+              tooltipText: "Settings"
+              focusable: true
+              selected: root.showSettings
+              onClicked: {
+                root.showSettings = !root.showSettings
+                focusArea.forceActiveFocus()  // Button keeps focus after a click, which looks selected.
+              }
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: root.errorMessage !== "" || (root.busy && (!actionProc.running || root.upgradingTools.length === 0)) || (!root.busy && root.actionMessage !== "")
+            text: root.errorMessage || (root.busy ? (actionProc.running ? root.actionMessage : "Checking mise tools…") : root.actionMessage)
+            textFormat: Text.PlainText
+            color: root.errorMessage ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Column {
+            visible: root.showSettings
+            width: parent.width
+            spacing: Style.space(8)
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                text: "Auto-prune"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+              ToggleSwitch {
+                checked: root.autoPrune
+                busy: root.busy
+                onToggled: root.setMiseSetting("upgrade.auto_prune", !root.autoPrune)
+              }
+              Item { Layout.fillWidth: true }
+              ButtonGroup {
+                visible: root.autoPrune
+                options: Model.presetOptions(root.prunePresets, root.pruneAfter)
+                value: root.pruneAfter
+                fontSize: Style.font.bodySmall
+                enabled: !root.busy
+                onChanged: function(value) { root.setMiseSetting("upgrade.prune_after", value) }
+              }
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                text: "Release cooldown"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                Layout.fillWidth: true
+              }
+              ButtonGroup {
+                options: Model.presetOptions(root.cooldownPresets, root.releaseAge)
+                value: root.releaseAge
+                fontSize: Style.font.bodySmall
+                enabled: !root.busy
+                onChanged: function(value) { root.setMiseSetting("minimum_release_age", value || null) }
+              }
+            }
+
+            RowLayout {
+              visible: root.prunableCount > 0
+              width: parent.width
+              spacing: Style.space(6)
+              Text {
+                text: root.prunableCount + " unused versions installed"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                Layout.fillWidth: true
+              }
+              Button {
+                text: "Clean up"
+                focusable: true
+                enabled: !root.busy
+                onClicked: root.confirmAction(["prune"], "Removing unused versions",
+                  "Delete " + root.prunableCount + " installed versions that no mise config uses? Versions used by your projects are kept.")
+              }
+            }
+          }
+
+          TextField {
+            id: searchField
+            width: parent.width
+            placeholderText: "Search tools or add tool@version"
+            onTextChanged: {
+              root.filterText = text
+              root.suggestions = []
+              searchDelay.restart()
             }
           }
 
           Flickable {
             width: parent.width
-            height: Math.min(updateList.implicitHeight, Style.space(250))
-            contentHeight: updateList.implicitHeight
+            height: Math.min(toolList.implicitHeight, Style.space(400))
+            contentHeight: toolList.implicitHeight
             clip: true
             boundsBehavior: Flickable.StopAtBounds
 
             Column {
-              id: updateList
+              id: toolList
               width: parent.width
-              spacing: Style.space(3)
+              spacing: Style.space(4)
 
               Text {
-                visible: root.updateRows.length === 0
-                text: root.busy ? "Loading updates…" : "All global tools are up to date"
+                visible: root.toolRows.length === 0 && root.addRows.length === 0
+                text: root.busy ? "Loading tools…" : "No matching mise tools"
                 textFormat: Text.PlainText
                 color: root.dim
                 font.family: root.fontFamily
@@ -368,50 +479,94 @@ Panel {
               }
 
               Repeater {
-                model: root.updateRows
+                model: root.toolRows
+
                 Column {
-                  id: updateRow
+                  id: toolRow
                   required property var modelData
-                  width: updateList.width
-                  spacing: Style.space(5)
+                  required property int index
+                  readonly property var tool: modelData
+                  readonly property bool upgrading: root.upgradingTools.indexOf(tool.name) !== -1
+                  readonly property bool canPin: tool.configured && tool.activeVersion !== "" && tool.name.indexOf(".") === -1
+                  readonly property bool canSkip: tool.configured && root.releaseAge !== ""
+                  width: toolList.width
+                  spacing: Style.space(4)
+
+                  PanelSectionHeader {
+                    visible: !toolRow.tool.configured && (toolRow.index === 0 || root.toolRows[toolRow.index - 1].configured)
+                    text: "INSTALLED, NOT SELECTED"
+                    foreground: root.foreground
+                  }
 
                   Rectangle {
                     width: parent.width
                     height: 1
                     color: Util.alpha(root.foreground, 0.2)
                   }
+
                   RowLayout {
                     width: parent.width
-                    spacing: Style.space(6)
-                    Column {
+                    spacing: Style.space(5)
+                    Text {
+                      text: toolRow.tool.name
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      font.bold: true
+                      elide: Text.ElideRight
                       Layout.fillWidth: true
-                      Text {
-                        text: updateRow.modelData.name
-                        textFormat: Text.PlainText
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
-                        font.bold: true
-                      }
-                      Text {
-                        text: "Latest " + updateRow.modelData.latest
-                        textFormat: Text.PlainText
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                      }
+                    }
+                    Text {
+                      text: toolRow.tool.displayVersion
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+                    Text {
+                      visible: toolRow.tool.latest !== ""
+                      text: "→ " + toolRow.tool.latest
+                      textFormat: Text.PlainText
+                      color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+                    Text {
+                      visible: toolRow.tool.pinned
+                      text: "Pinned"
+                      textFormat: Text.PlainText
+                      color: Color.accent
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+                    Text {
+                      visible: toolRow.tool.configured && toolRow.tool.activeVersion === ""
+                      text: "Not installed"
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
                     }
                     Button {
-                      visible: root.upgradingTools.indexOf(updateRow.modelData.name) === -1
+                      visible: !toolRow.tool.configured && toolRow.tool.displayVersion !== ""
+                      text: "Select"
+                      focusable: true
+                      enabled: !root.busy
+                      onClicked: root.runAction(["use", "--global", toolRow.tool.name + "@" + toolRow.tool.displayVersion], "Selecting " + toolRow.tool.name + "@" + toolRow.tool.displayVersion)
+                    }
+                    Button {
+                      visible: toolRow.tool.latest !== "" && !toolRow.upgrading
                       text: "Update"
                       focusable: true
                       enabled: !root.busy
-                      onClicked: root.upgradeTools([updateRow.modelData.name], "Updating " + updateRow.modelData.name)
+                      onClicked: root.upgradeTools([toolRow.tool.name], "Updating " + toolRow.tool.name)
                     }
                     Column {
                       id: inlineProgress
-                      readonly property var progress: root.upgradeProgress[updateRow.modelData.name]
-                      visible: root.upgradingTools.indexOf(updateRow.modelData.name) !== -1
+                      readonly property var progress: root.upgradeProgress[toolRow.tool.name]
+                      visible: toolRow.upgrading
                       Layout.preferredWidth: Style.space(110)
                       spacing: Style.space(4)
                       Text {
@@ -456,255 +611,145 @@ Panel {
                         }
                       }
                     }
+                    Button {
+                      visible: toolRow.tool.configured || toolRow.tool.versions.length > 0
+                      text: root.expandedTool === toolRow.tool.name ? "⌃" : "⌄"
+                      tooltipText: "Manage " + toolRow.tool.name + " versions"
+                      focusable: true
+                      onClicked: root.expandedTool = root.expandedTool === toolRow.tool.name ? "" : toolRow.tool.name
+                    }
                   }
-                }
-              }
-            }
-          }
 
-          Toggle {
-            width: parent.width
-            label: "Auto-prune after updates"
-            description: root.autoPrune
-              ? "On · Mise removes eligible versions after its configured grace period."
-              : "Off · Keep replaced versions installed."
-            checked: root.autoPrune
-            enabled: !root.busy
-            onClicked: root.setAutoPrune(!root.autoPrune)
-          }
-        }
+                  Column {
+                    visible: root.expandedTool === toolRow.tool.name
+                    width: parent.width
+                    spacing: Style.space(3)
 
-        TextField {
-          id: filterField
-          visible: root.activeTab === "tools"
-          width: parent.width
-          placeholderText: "Filter tools"
-          onTextChanged: root.filterText = text
-        }
-
-        Flickable {
-          visible: root.activeTab === "tools"
-          width: parent.width
-          height: Math.min(toolList.implicitHeight, Style.space(370))
-          contentHeight: toolList.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-
-          Column {
-            id: toolList
-            width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              visible: root.toolRows.length === 0
-              text: root.busy ? "Loading tools…" : "No matching mise tools"
-              textFormat: Text.PlainText
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-            }
-
-            Repeater {
-              model: root.toolRows
-
-              Column {
-                id: toolRow
-                required property var modelData
-                required property int index
-                readonly property var tool: modelData
-                width: toolList.width
-                spacing: Style.space(4)
-
-                PanelSectionHeader {
-                  visible: toolRow.index === 0 || root.toolRows[toolRow.index - 1].configured !== toolRow.tool.configured
-                  text: toolRow.tool.configured ? "SELECTED GLOBALLY" : "INSTALLED, NOT SELECTED"
-                  foreground: root.foreground
-                }
-
-                Rectangle {
-                  width: parent.width
-                  height: 1
-                  color: Util.alpha(root.foreground, 0.2)
-                }
-
-                RowLayout {
-                  width: parent.width
-                  spacing: Style.space(5)
-                  Text {
-                    text: toolRow.tool.name
-                    textFormat: Text.PlainText
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    font.bold: true
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                  }
-                  Text {
-                    text: toolRow.tool.displayVersion
-                    textFormat: Text.PlainText
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                  }
-                  Text {
-                    visible: toolRow.tool.pinned
-                    text: "Pinned"
-                    textFormat: Text.PlainText
-                    color: Color.accent
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                  }
-                  Text {
-                    visible: toolRow.tool.configured && toolRow.tool.activeVersion === ""
-                    text: "Not installed"
-                    textFormat: Text.PlainText
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-                  Button {
-                    visible: !toolRow.tool.configured && toolRow.tool.displayVersion !== ""
-                    text: "Select"
-                    focusable: true
-                    enabled: !root.busy
-                    onClicked: root.runAction(["use", "--global", toolRow.tool.name + "@" + toolRow.tool.displayVersion], "Selecting " + toolRow.tool.name + "@" + toolRow.tool.displayVersion)
-                  }
-                  Button {
-                    visible: toolRow.tool.configured || toolRow.tool.versions.length > 0
-                    text: root.expandedTool === toolRow.tool.name ? "⌃" : "⌄"
-                    tooltipText: "Manage " + toolRow.tool.name + " versions"
-                    focusable: true
-                    onClicked: root.expandedTool = root.expandedTool === toolRow.tool.name ? "" : toolRow.tool.name
-                  }
-                }
-
-                Column {
-                  visible: root.expandedTool === toolRow.tool.name
-                  width: parent.width
-                  spacing: Style.space(3)
-
-                  Repeater {
-                    model: toolRow.tool.versions
                     RowLayout {
-                      id: versionRow
-                      required property var modelData
-                      readonly property var version: modelData
-                      width: toolRow.width
-                      spacing: Style.space(5)
+                      visible: toolRow.tool.configured
+                      width: parent.width
+                      spacing: Style.space(6)
                       Text {
-                        text: "  " + versionRow.version.version
+                        visible: toolRow.canPin
+                        text: "Pin version"
                         textFormat: Text.PlainText
                         color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall
-                        Layout.fillWidth: true
                       }
-                      Button {
-                        text: "Select"
-                        tooltipText: "Select this version globally"
-                        focusable: true
-                        enabled: !root.busy
-                        onClicked: root.runAction(["use", "--global", toolRow.tool.name + "@" + versionRow.version.version], "Selecting " + toolRow.tool.name + "@" + versionRow.version.version)
+                      ToggleSwitch {
+                        visible: toolRow.canPin
+                        checked: toolRow.tool.pinned
+                        busy: root.busy
+                        onToggled: root.setPinned(toolRow.tool, !toolRow.tool.pinned)
                       }
+                      Text {
+                        visible: toolRow.canSkip
+                        Layout.leftMargin: toolRow.canPin ? Style.space(12) : 0
+                        text: "Skip cooldown"
+                        textFormat: Text.PlainText
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall
+                      }
+                      ToggleSwitch {
+                        visible: toolRow.canSkip
+                        checked: root.releaseAgeExcludes.indexOf(toolRow.tool.name) !== -1
+                        busy: root.busy
+                        onToggled: root.toggleCooldownSkip(toolRow.tool.name)
+                      }
+                      Item { Layout.fillWidth: true }
                       Button {
-                        visible: versionRow.version.prunable
-                        text: "Delete"
-                        tooltipText: "Delete this unused installed version"
+                        text: "Uninstall"
+                        tooltipText: "Remove from global config and delete unused versions"
                         focusable: true
                         enabled: !root.busy
                         onClicked: root.confirmAction(
-                          ["uninstall", toolRow.tool.name + "@" + versionRow.version.version],
-                          "Deleting " + toolRow.tool.name + "@" + versionRow.version.version,
-                          "Delete the installed " + toolRow.tool.name + "@" + versionRow.version.version + " files? mise currently reports this version as unused.")
+                          ["unuse", "--global", toolRow.tool.name],
+                          "Uninstalling " + toolRow.tool.name,
+                          "Uninstall " + toolRow.tool.name + "? Versions used by your projects are kept.")
+                      }
+                    }
+
+                    Repeater {
+                      model: toolRow.tool.versions
+                      RowLayout {
+                        id: versionRow
+                        required property var modelData
+                        readonly property var version: modelData
+                        width: toolRow.width
+                        spacing: Style.space(5)
+                        Text {
+                          text: versionRow.version.version
+                          textFormat: Text.PlainText
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall
+                          Layout.fillWidth: true
+                        }
+                        Button {
+                          text: "Select"
+                          tooltipText: "Select this version globally"
+                          focusable: true
+                          enabled: !root.busy
+                          onClicked: root.runAction(["use", "--global", toolRow.tool.name + "@" + versionRow.version.version], "Selecting " + toolRow.tool.name + "@" + versionRow.version.version)
+                        }
+                        Button {
+                          visible: versionRow.version.prunable
+                          text: "Delete"
+                          tooltipText: "Delete this unused installed version"
+                          focusable: true
+                          enabled: !root.busy
+                          onClicked: root.confirmAction(
+                            ["uninstall", toolRow.tool.name + "@" + versionRow.version.version],
+                            "Deleting " + toolRow.tool.name + "@" + versionRow.version.version,
+                            "Delete the installed " + toolRow.tool.name + "@" + versionRow.version.version + " files? mise currently reports this version as unused.")
+                        }
                       }
                     }
                   }
-
-                  Button {
-                    visible: toolRow.tool.configured
-                    text: "Unselect global"
-                    tooltipText: "Remove from global config; keep installed versions"
-                    focusable: true
-                    enabled: !root.busy
-                    onClicked: root.confirmAction(
-                      ["unuse", "--global", "--no-prune", toolRow.tool.name],
-                      "Unselecting " + toolRow.tool.name,
-                      "Remove " + toolRow.tool.name + " from global mise configuration? Installed versions will stay.")
-                  }
                 }
               }
-            }
-          }
-        }
 
-        Column {
-          visible: root.activeTab === "add"
-          width: parent.width
-          spacing: Style.space(8)
-
-          PanelSectionHeader { text: "SEARCH THE MISE REGISTRY"; foreground: root.foreground }
-
-          RowLayout {
-            width: parent.width
-            spacing: Style.space(6)
-            TextField {
-              id: addField
-              placeholderText: "Search or enter tool@version"
-              Layout.fillWidth: true
-              onTextChanged: { root.suggestions = []; searchDelay.restart() }
-              onAccepted: root.installTool(text)
-            }
-            Button {
-              text: "Install"
-              focusable: true
-              enabled: !root.busy && Model.validToolSpec(addField.text)
-              onClicked: root.installTool(addField.text)
-            }
-          }
-
-          Repeater {
-            model: root.suggestions
-            Column {
-              id: suggestionRow
-              required property var modelData
-              readonly property var suggestion: modelData
-              width: content.width
-              spacing: Style.space(4)
-              Rectangle {
-                width: parent.width
-                height: 1
-                color: Util.alpha(root.foreground, 0.2)
-              }
-              RowLayout {
-                width: parent.width
-                spacing: Style.space(6)
+              Repeater {
+                model: root.addRows
                 Column {
-                  Layout.fillWidth: true
-                  Text {
-                    text: suggestionRow.suggestion.name
-                    textFormat: Text.PlainText
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    font.bold: true
-                  }
-                  Text {
-                    text: suggestionRow.suggestion.description
-                    textFormat: Text.PlainText
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    elide: Text.ElideRight
+                  id: addRow
+                  required property var modelData
+                  width: toolList.width
+                  spacing: Style.space(4)
+                  Rectangle {
                     width: parent.width
+                    height: 1
+                    color: Util.alpha(root.foreground, 0.2)
                   }
-                }
-                Button {
-                  text: "Install"
-                  focusable: true
-                  enabled: !root.busy
-                  onClicked: root.installTool(suggestionRow.suggestion.name)
+                  RowLayout {
+                    width: parent.width
+                    spacing: Style.space(6)
+                    Text {
+                      text: addRow.modelData.name
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      font.bold: true
+                    }
+                    Text {
+                      text: addRow.modelData.description
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      elide: Text.ElideRight
+                      Layout.fillWidth: true
+                    }
+                    Button {
+                      text: "Install"
+                      focusable: true
+                      enabled: !root.busy
+                      onClicked: root.installTool(addRow.modelData.name)
+                    }
+                  }
                 }
               }
             }

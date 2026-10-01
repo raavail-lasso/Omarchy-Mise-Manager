@@ -89,11 +89,25 @@ function upgradeProgressLine(line, names) {
   return null
 }
 
+function addRows(query, suggestions, known) {
+  var text = String(query || "").trim()
+  if (text.indexOf("@") !== -1) return validToolSpec(text) ? [{ name: text, description: "Install this version" }] : []
+  return suggestions.filter(function(item) { return !known[item.name] })
+}
+
+function presetOptions(presets, current) {
+  var value = String(current || "")
+  if (presets.some(function(option) { return option.value === value })) return presets
+  return presets.concat([{ value: value, label: value }])
+}
+
 if (typeof module !== "undefined") module.exports = {
   objectFromJson: objectFromJson,
   updateCount: updateCount,
   rows: rows,
   searchResults: searchResults,
   validToolSpec: validToolSpec,
-  upgradeProgressLine: upgradeProgressLine
+  upgradeProgressLine: upgradeProgressLine,
+  presetOptions: presetOptions,
+  addRows: addRows
 }

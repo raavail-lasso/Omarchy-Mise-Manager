@@ -32,4 +32,12 @@ assert.deepEqual(model.upgradeProgressLine("  python@3.14  installing  1.0s  32/
 assert.deepEqual(model.upgradeProgressLine("  node@24  extracting  3.0s", ["node"]),
   { name: "node", phase: "extracting", percent: null })
 assert.equal(model.upgradeProgressLine("✓ node@24  3.0s", ["node"]), null)
+const presets = [{ value: "", label: "Off" }, { value: "7d", label: "7 days" }]
+assert.equal(model.presetOptions(presets, "7d"), presets)
+assert.equal(model.presetOptions(presets, null), presets)
+assert.deepEqual(model.presetOptions(presets, "5d").map(o => o.value), ["", "7d", "5d"])
+const found = [{ name: "node", description: "Node" }, { name: "ruby", description: "Ruby" }]
+assert.deepEqual(model.addRows("n", found, { node: [] }).map(r => r.name), ["ruby"])
+assert.deepEqual(model.addRows("node@20", found, {}).map(r => r.name), ["node@20"])
+assert.deepEqual(model.addRows("node@ 20", found, {}), [])
 console.log("Model checks passed")

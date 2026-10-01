@@ -25,8 +25,9 @@ Build a Quickshell `bar-widget` plugin for Omarchy 4.x that manages mise tools s
 - Keep all writes explicitly global. Distinguish `mise uninstall TOOL@VERSION` from `mise unuse --global TOOL`.
 - Run one mutation at a time, show progress/errors, and refresh after completion.
 - Ask for confirmation before removing an installed version or a global tool request.
-- Organize the popup into Updates, Tools, and Add tabs. Keep active versions in tool headers, with older versions below a divider.
-- Save the auto-prune choice with the bar widget. Off uses `--no-prune`; on lets mise use its configured grace period for upgrades started here.
+- Use one screen, no tabs: header actions, one search field that filters tools and finds registry tools, and one alphabetical tool list with inline updates. Older versions sit in each row's expanded section.
+- Expose mise's own settings instead of widget-only copies: auto-prune, prune wait, and release cooldown behind the gear button. Pin and cooldown exceptions live in each tool's expanded row; pin edits `tools.<name>.version` with `mise config set --global`, and unpin returns to `latest`. Presets use ButtonGroup rather than Dropdown popups, which the panel window can clip.
+- Leave cache, prerelease, network, and verification settings at mise defaults.
 
 ## Progress
 
