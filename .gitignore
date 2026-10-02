@@ -1,0 +1,5 @@
+# Local coding-agent instructions. Not distributed: the marketplace treats
+# auto-consumed agent instructions as out of scope for a plugin, and the file
+# documents destructive dev-loop commands.
+AGENTS.md
+CLAUDE.md

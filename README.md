@@ -2,6 +2,8 @@
 
 A Quickshell bar widget for Omarchy 4.x that shows mise tool updates and manages global tool selections.
 
+![Mise Manager](preview.png)
+
 ## Features
 
 - Bar update count, checked every 30 minutes and on demand.
@@ -14,9 +16,26 @@ A Quickshell bar widget for Omarchy 4.x that shows mise tool updates and manages
 
 The plugin uses `mise` directly. Settings are written to `~/.config/mise/config.toml` with `mise settings`, so terminal `mise` commands follow them too. It never edits project configuration and does not need another service or dependency.
 
-## Install locally
+## Requirements
 
-Validate the plugin folder with `omarchy plugin validate .`, then copy `manifest.json`, `BarWidget.qml`, and `Model.js` into `~/.config/omarchy/plugins/raavail.mise-manager/`. Run `omarchy plugin enable raavail.mise-manager --section right` while Omarchy Shell is running. The widget works with the stock bar and other bars using Omarchy's widget registry, including Islands Bar.
+- Omarchy 4.x with Omarchy Shell (Quickshell).
+- [mise](https://mise.jdx.dev), which Omarchy ships. No other dependency.
+
+## Install
+
+```bash
+omarchy plugin add https://github.com/raavail-lasso/Omarchy-Mise-Manager.git --enable
+```
+
+The widget is placed in the right section of the bar. It works with the stock bar and other bars that use Omarchy's widget registry, including Islands Bar.
+
+## Remove
+
+```bash
+omarchy plugin remove raavail.mise-manager
+```
+
+Removing the plugin leaves your mise tools and `~/.config/mise/config.toml` as they are. To keep the plugin installed but hide the widget, run `omarchy plugin disable raavail.mise-manager`.
 
 ## Controls
 
@@ -28,3 +47,11 @@ Validate the plugin folder with `omarchy plugin validate .`, then copy `manifest
 - `Uninstall` removes the tool from global mise configuration and deletes versions no project uses; `Delete` removes one installed version. Both ask for confirmation.
 
 The version labelled active is the one selected in global mise configuration. Project-local configurations may select another version when you enter their directories.
+
+## Limits
+
+Every mise command runs without a shell, from your home directory, under a deadline: 60 seconds for reads, 30 seconds for search, and 30 minutes for installs and upgrades, which may compile from source. Output is capped at 1 MiB; a run past the cap is stopped and reported as failed.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -14,6 +14,9 @@ Panel {
   ipcTarget: moduleName
 
   readonly property string home: Quickshell.env("HOME") || ""
+  // Every mise run is bounded: past the byte cap the run is stopped, and
+  // `timeout` signals its whole process group at the deadline.
+  readonly property int maxOutputBytes: 1048576
   property var installed: ({})
   property var globals: ({})
   property var prunable: ({})
@@ -79,16 +82,34 @@ Panel {
     startQuery("installed", ["ls", "--installed", "--json"])
   }
 
+  function mise(seconds, args) {
+    return ["timeout", "-k", "2s", seconds + "s", "mise"].concat(args)
+  }
+
+  function limit(proc, text) {
+    if (text.length > maxOutputBytes && !proc.truncated) {
+      proc.truncated = true
+      proc.running = false
+    }
+  }
+
+  function failure(proc, exitCode, text) {
+    if (proc.truncated) return "output exceeded 1 MiB"
+    if (exitCode === 124 || exitCode === 137) return "timed out"
+    return String(text || "unknown error").trim().slice(0, 240)
+  }
+
   function startQuery(stage, args) {
     queryStage = stage
-    queryProc.command = ["mise", "-C", home].concat(args)
+    queryProc.truncated = false
+    queryProc.command = mise(60, ["-C", home].concat(args))
     queryProc.running = true
   }
 
   function finishQuery(exitCode) {
     var stage = queryStage
-    if (exitCode !== 0) {
-      errorMessage = "mise " + stage + " failed: " + String(queryErr.text || queryOut.text || "unknown error").trim().slice(0, 240)
+    if (exitCode !== 0 || queryProc.truncated) {
+      errorMessage = "mise " + stage + " failed: " + failure(queryProc, exitCode, queryErr.text || queryOut.text)
       queryStage = ""
     } else {
       try {
@@ -129,7 +150,9 @@ Panel {
     upgradeProgress = ({})
     actionErrOffset = 0
     actionErrLine = ""
-    actionProc.command = ["mise", "-C", home, "-y"].concat(args)
+    actionProc.truncated = false
+    // Long enough for tools that compile from source.
+    actionProc.command = mise(1800, ["-C", home, "-y"].concat(args))
     actionProc.running = true
   }
 
@@ -195,7 +218,8 @@ Panel {
     if (query.length < 2 || query.indexOf("@") !== -1) { suggestions = []; return }
     if (searchProc.running) { searchPending = true; return }
     searchProc.currentQuery = query
-    searchProc.command = ["mise", "search", "--no-header", "--match-type", "contains", query]
+    searchProc.truncated = false
+    searchProc.command = mise(30, ["search", "--no-header", "--match-type", "contains", "--", query])
     searchProc.running = true
   }
 
@@ -229,28 +253,33 @@ Panel {
 
   Process {
     id: queryProc
-    stdout: StdioCollector { id: queryOut; waitForEnd: true }
-    stderr: StdioCollector { id: queryErr; waitForEnd: true }
+    property bool truncated: false
+    stdout: StdioCollector { id: queryOut; waitForEnd: false; onTextChanged: root.limit(queryProc, text) }
+    stderr: StdioCollector { id: queryErr; waitForEnd: false; onTextChanged: root.limit(queryProc, text) }
     onExited: function(exitCode) { root.finishQuery(exitCode) }
   }
 
   Process {
     id: actionProc
-    stdout: StdioCollector { id: actionOut; waitForEnd: true }
+    property bool truncated: false
+    stdout: StdioCollector { id: actionOut; waitForEnd: false; onTextChanged: root.limit(actionProc, text) }
     stderr: StdioCollector {
       id: actionErr
       waitForEnd: false
-      onTextChanged: root.readActionProgress(text)
+      onTextChanged: {
+        root.limit(actionProc, text)
+        if (!actionProc.truncated) root.readActionProgress(text)
+      }
     }
     onExited: function(exitCode) {
       root.upgradingTools = []
       root.upgradeProgress = ({})
-      if (exitCode === 0) {
+      if (exitCode === 0 && !actionProc.truncated) {
         root.actionMessage = root.actionLabel === root.settingsLabel ? "" : root.actionLabel + " complete"
         messageTimer.restart()
         if (root.actionLabel.indexOf("Installing ") === 0) searchField.text = ""
       } else {
-        root.errorMessage = root.actionLabel + " failed: " + String(actionErr.text || actionOut.text || "unknown error").trim().slice(0, 240)
+        root.errorMessage = root.actionLabel + " failed: " + root.failure(actionProc, exitCode, actionErr.text || actionOut.text)
         root.actionMessage = ""
       }
       root.refreshPending = false
@@ -261,10 +290,11 @@ Panel {
   Process {
     id: searchProc
     property string currentQuery: ""
-    stdout: StdioCollector { id: searchOut; waitForEnd: true }
+    property bool truncated: false
+    stdout: StdioCollector { id: searchOut; waitForEnd: false; onTextChanged: root.limit(searchProc, text) }
     onExited: function(exitCode) {
       if (currentQuery === searchField.text.trim())
-        root.suggestions = exitCode === 0 ? Model.searchResults(searchOut.text) : []
+        root.suggestions = exitCode === 0 && !truncated ? Model.searchResults(searchOut.text) : []
       if (root.searchPending) {
         root.searchPending = false
         Qt.callLater(root.searchTools)
