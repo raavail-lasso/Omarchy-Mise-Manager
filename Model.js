@@ -5,13 +5,19 @@ function objectFromJson(text) {
   return value
 }
 
-function updateCount(globals, updates) {
-  var count = 0
-  for (var name in updates) if (globals[name] && updates[name] && updates[name].latest) count++
-  return count
+// Tools declared in system config, e.g. Omarchy's /etc/mise/conf.d defaults.
+function systemTools(configs) {
+  var result = {}
+  if (!Array.isArray(configs)) throw new Error("Expected a JSON array from mise config ls")
+  configs.forEach(function(config) {
+    if (String(config.path || "").indexOf("/etc/") === 0)
+      (config.tools || []).forEach(function(name) { result[name] = true })
+  })
+  return result
 }
 
-function rows(installed, globals, updates, prunable, filter) {
+function rows(installed, globals, updates, prunable, filter, system) {
+  system = system || {}
   var names = {}
   for (var name in installed) names[name] = true
   for (var globalName in globals) names[globalName] = true
@@ -39,6 +45,10 @@ function rows(installed, globals, updates, prunable, filter) {
 
     var requested = active ? String(active.requested_version || active.version || "") : ""
     var activeVersion = active && active.installed ? String(active.version) : ""
+    var source = active && active.source ? String(active.source.path || "") : ""
+    var fromSystem = source.indexOf("/etc/") === 0
+    // Lazy system defaults install on first run; list them only when searched.
+    if (fromSystem && !activeVersion && !versions.length && !query) continue
     var displayVersion = activeVersion || (selected.length ? requested : (versions[0] ? versions[0].version : ""))
 
     result.push({
@@ -48,7 +58,9 @@ function rows(installed, globals, updates, prunable, filter) {
       activeVersion: activeVersion,
       displayVersion: displayVersion,
       pinned: requested !== "" && requested === activeVersion,
-      latest: updates[tool] && selected.length > 0 ? String(updates[tool].latest || "") : "",
+      fromSystem: fromSystem,
+      systemDefault: !!system[tool],
+      latest: updates[tool] && activeVersion ? String(updates[tool].latest || "") : "",
       versions: versions.filter(function(item) { return item.version !== displayVersion })
     })
   }
@@ -103,7 +115,7 @@ function presetOptions(presets, current) {
 
 if (typeof module !== "undefined") module.exports = {
   objectFromJson: objectFromJson,
-  updateCount: updateCount,
+  systemTools: systemTools,
   rows: rows,
   searchResults: searchResults,
   validToolSpec: validToolSpec,

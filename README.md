@@ -46,6 +46,8 @@ Removing the plugin leaves your mise tools and `~/.config/mise/config.toml` as t
 - The gear button shows the settings: auto-prune and release cooldown. Expand a tool row to pin it or let it skip the cooldown.
 - `Uninstall` removes the tool from global mise configuration and deletes versions no project uses; `Delete` removes one installed version. Both ask for confirmation.
 
+Omarchy declares its default tools (coding agents, `gh`, `node`, `uv`, …) in `/etc/mise/conf.d`. They install on first run, so the list shows them only when you search for them, and only installed ones count as updates. Uninstall is hidden for them; Omarchy's opt-out is `omarchy-mise-default-tools disable`. If your global config overrides one of them, `Use Omarchy default` removes your entry. Unpinning one does the same, so it goes back to updating automatically.
+
 The version labelled active is the one selected in global mise configuration. Project-local configurations may select another version when you enter their directories.
 
 ## Limits

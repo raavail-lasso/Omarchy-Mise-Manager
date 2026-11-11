@@ -7,7 +7,6 @@ const updates = { node: { latest: "24" }, other: { latest: "2" } }
 const prunable = { node: [{ version: "20" }] }
 const row = model.rows(installed, globals, updates, prunable, "no")[0]
 
-assert.equal(model.updateCount(globals, updates), 1)
 assert.equal(row.activeVersion, "22")
 assert.equal(row.displayVersion, "22")
 assert.equal(row.pinned, false)
@@ -40,4 +39,16 @@ const found = [{ name: "node", description: "Node" }, { name: "ruby", descriptio
 assert.deepEqual(model.addRows("n", found, { node: [] }).map(r => r.name), ["ruby"])
 assert.deepEqual(model.addRows("node@20", found, {}).map(r => r.name), ["node@20"])
 assert.deepEqual(model.addRows("node@ 20", found, {}), [])
+// Omarchy's lazy system defaults: hidden until searched, never counted as updates.
+const etc = { path: "/etc/mise/conf.d/omarchy-tools.toml" }
+const lazyGlobals = { amp: [{ version: "1", requested_version: "latest", installed: false, active: false, source: etc }],
+  claude: [{ version: "2", requested_version: "latest", installed: true, active: true, source: etc }] }
+const lazyUpdates = { amp: { current: null, latest: "1" }, claude: { current: "2", latest: "3" } }
+const system = model.systemTools([{ path: "/home/u/.config/mise/config.toml", tools: ["uv"] }, { path: etc.path, tools: ["amp", "claude", "uv"] }])
+assert.deepEqual(Object.keys(system).sort(), ["amp", "claude", "uv"])
+const lazyRows = model.rows({ claude: [{ version: "2", installed: true }] }, lazyGlobals, lazyUpdates, {}, "", system)
+assert.deepEqual(lazyRows.map(r => [r.name, r.latest, r.fromSystem]), [["claude", "3", true]])
+const searched = model.rows({}, lazyGlobals, lazyUpdates, {}, "amp", system)[0]
+assert.equal(searched.latest, "")
+assert.equal(searched.systemDefault, true)
 console.log("Model checks passed")

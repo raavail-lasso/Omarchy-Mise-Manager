@@ -19,6 +19,7 @@ Panel {
   readonly property int maxOutputBytes: 1048576
   property var installed: ({})
   property var globals: ({})
+  property var systemTools: ({})
   property var prunable: ({})
   property var updates: ({})
   property var miseSettings: ({})
@@ -56,13 +57,13 @@ Panel {
     { value: "", label: "Off" }, { value: "1d", label: "1d" }, { value: "3d", label: "3d" },
     { value: "7d", label: "7d" }, { value: "14d", label: "14d" }
   ]
-  readonly property var toolRows: Model.rows(installed, globals, updates, prunable, filterText)
+  readonly property var toolRows: Model.rows(installed, globals, updates, prunable, filterText, systemTools)
   readonly property int prunableCount: Object.keys(prunable).reduce(function(count, name) {
     return count + (Array.isArray(prunable[name]) ? prunable[name].length : 0)
   }, 0)
   readonly property var addRows: Model.addRows(filterText, suggestions, Object.assign({}, installed, globals))
-  readonly property var updateRows: Model.rows(installed, globals, updates, prunable, "").filter(function(item) { return item.latest !== "" })
-  readonly property int updateCount: Model.updateCount(globals, updates)
+  readonly property var updateRows: Model.rows(installed, globals, updates, prunable, "", systemTools).filter(function(item) { return item.latest !== "" })
+  readonly property int updateCount: updateRows.length
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.45)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -113,12 +114,15 @@ Panel {
       queryStage = ""
     } else {
       try {
-        var data = Model.objectFromJson(queryOut.text)
+        var data = stage === "config" ? Model.systemTools(JSON.parse(queryOut.text)) : Model.objectFromJson(queryOut.text)
         if (stage === "installed") {
           installed = data
           Qt.callLater(function() { root.startQuery("global", ["ls", "--global", "--json"]) })
         } else if (stage === "global") {
           globals = data
+          Qt.callLater(function() { root.startQuery("config", ["config", "ls", "--json"]) })
+        } else if (stage === "config") {
+          systemTools = data
           Qt.callLater(function() { root.startQuery("prunable", ["ls", "--prunable", "--json"]) })
         } else if (stage === "prunable") {
           prunable = data
@@ -183,9 +187,13 @@ Panel {
   }
 
   // Edits the version key only, so tool options like allow_builds survive.
+  // Unpinning a system default drops the override so the system declaration
+  // (lazy, auto-updating) applies again instead of a user `latest` entry.
   function setPinned(tool, pin) {
-    runAction(["config", "set", "--global", "tools." + tool.name + ".version", pin ? tool.activeVersion : "latest"],
-      (pin ? "Pinning " : "Unpinning ") + tool.name)
+    var args = pin ? ["config", "set", "--global", "tools." + tool.name + ".version", tool.activeVersion]
+      : tool.systemDefault ? ["unuse", "--global", "--no-prune", tool.name]
+      : ["config", "set", "--global", "tools." + tool.name + ".version", "latest"]
+    runAction(args, (pin ? "Pinning " : "Unpinning ") + tool.name)
   }
 
   function toggleCooldownSkip(name) {
@@ -421,7 +429,7 @@ Panel {
               ToggleSwitch {
                 checked: root.autoPrune
                 busy: root.busy
-                onToggled: root.setMiseSetting("upgrade.auto_prune", !root.autoPrune)
+                onToggled: root.setMiseSetting("upgrade.auto_prune", root.autoPrune ? null : true)
               }
               Item { Layout.fillWidth: true }
               ButtonGroup {
@@ -518,7 +526,7 @@ Panel {
                   readonly property var tool: modelData
                   readonly property bool upgrading: root.upgradingTools.indexOf(tool.name) !== -1
                   readonly property bool canPin: tool.configured && tool.activeVersion !== "" && tool.name.indexOf(".") === -1
-                  readonly property bool canSkip: tool.configured && root.releaseAge !== ""
+                  readonly property bool canSkip: tool.configured && !tool.fromSystem && root.releaseAge !== ""
                   width: toolList.width
                   spacing: Style.space(4)
 
@@ -573,7 +581,7 @@ Panel {
                     }
                     Text {
                       visible: toolRow.tool.configured && toolRow.tool.activeVersion === ""
-                      text: "Not installed"
+                      text: toolRow.tool.fromSystem ? "Installs on first run" : "Not installed"
                       textFormat: Text.PlainText
                       color: root.dim
                       font.family: root.fontFamily
@@ -690,6 +698,7 @@ Panel {
                       }
                       Item { Layout.fillWidth: true }
                       Button {
+                        visible: !toolRow.tool.fromSystem && !toolRow.tool.systemDefault
                         text: "Uninstall"
                         tooltipText: "Remove from global config and delete unused versions"
                         focusable: true
@@ -698,6 +707,14 @@ Panel {
                           ["unuse", "--global", toolRow.tool.name],
                           "Uninstalling " + toolRow.tool.name,
                           "Uninstall " + toolRow.tool.name + "? Versions used by your projects are kept.")
+                      }
+                      Button {
+                        visible: !toolRow.tool.fromSystem && toolRow.tool.systemDefault && !toolRow.tool.pinned
+                        text: "Use Omarchy default"
+                        tooltipText: "Drop your global entry so Omarchy's declaration applies"
+                        focusable: true
+                        enabled: !root.busy
+                        onClicked: root.runAction(["unuse", "--global", "--no-prune", toolRow.tool.name], "Restoring " + toolRow.tool.name)
                       }
                     }
 
