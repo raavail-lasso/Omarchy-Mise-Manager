@@ -51,4 +51,7 @@ assert.deepEqual(lazyRows.map(r => [r.name, r.latest, r.fromSystem]), [["claude"
 const searched = model.rows({}, lazyGlobals, lazyUpdates, {}, "amp", system)[0]
 assert.equal(searched.latest, "")
 assert.equal(searched.systemDefault, true)
+assert.equal(model.errorText("mise \x1b[32m✓\x1b[0m uv  4ms\r\nmise ERROR Failed to install vercel\n  caused by: trust downgrade"),
+  "Failed to install vercel\n  caused by: trust downgrade")
+assert.equal(model.errorText(" plain failure \n"), "plain failure")
 console.log("Model checks passed")

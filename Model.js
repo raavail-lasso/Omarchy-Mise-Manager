@@ -101,6 +101,13 @@ function upgradeProgressLine(line, names) {
   return null
 }
 
+// mise prints progress to stderr before the error; keep only the error onward.
+function errorText(text) {
+  var clean = String(text || "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+  var start = clean.search(/^.*\bERROR\b/m)
+  return (start < 0 ? clean : clean.slice(start)).replace(/^mise ERROR /gm, "").trim()
+}
+
 function addRows(query, suggestions, known) {
   var text = String(query || "").trim()
   if (text.indexOf("@") !== -1) return validToolSpec(text) ? [{ name: text, description: "Install this version" }] : []
@@ -121,5 +128,6 @@ if (typeof module !== "undefined") module.exports = {
   validToolSpec: validToolSpec,
   upgradeProgressLine: upgradeProgressLine,
   presetOptions: presetOptions,
-  addRows: addRows
+  addRows: addRows,
+  errorText: errorText
 }

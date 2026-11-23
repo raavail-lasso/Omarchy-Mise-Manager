@@ -97,7 +97,7 @@ Panel {
   function failure(proc, exitCode, text) {
     if (proc.truncated) return "output exceeded 1 MiB"
     if (exitCode === 124 || exitCode === 137) return "timed out"
-    return String(text || "unknown error").trim().slice(0, 240)
+    return (Model.errorText(text) || "unknown error").slice(0, 240)
   }
 
   function startQuery(stage, args) {
@@ -530,16 +530,16 @@ Panel {
                   width: toolList.width
                   spacing: Style.space(4)
 
-                  PanelSectionHeader {
-                    visible: !toolRow.tool.configured && (toolRow.index === 0 || root.toolRows[toolRow.index - 1].configured)
-                    text: "INSTALLED, NOT SELECTED"
-                    foreground: root.foreground
-                  }
-
                   Rectangle {
                     width: parent.width
                     height: 1
                     color: Util.alpha(root.foreground, 0.2)
+                  }
+
+                  PanelSectionHeader {
+                    visible: !toolRow.tool.configured && (toolRow.index === 0 || root.toolRows[toolRow.index - 1].configured)
+                    text: "INSTALLED, NOT SELECTED"
+                    foreground: root.foreground
                   }
 
                   RowLayout {
